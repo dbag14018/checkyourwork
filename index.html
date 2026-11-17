@@ -102,6 +102,11 @@
   .dday.urgent { color: #e53e3e; } .dday.soon { color: #dd6b20; } .dday.safe { color: #38a169; } .dday.over { color: #718096; }
   .empty { text-align: center; color: #9aa5b1; font-size: 0.85rem; padding: 22px 0; }
   .adminBtns { margin-top: 5px; display: flex; gap: 5px; }
+  /* 내가 완료 체크한 수행평가: 흐리게 + 가운데 줄 */
+  .doneBox { width: 20px; height: 20px; flex-shrink: 0; cursor: pointer; accent-color: #38a169; }
+  .row.done { opacity: 0.5; }
+  .row.done .title { text-decoration: line-through; }
+  .chip.done { opacity: 0.4; text-decoration: line-through; }
 
   /* ===== 모달(팝업 창) ===== */
   .modal {
@@ -298,6 +303,13 @@ const NO_COLOR = "#4a5568";   // 삭제된 과목 등 색을 찾지 못했을 �
 let tasks = [];               // 전체 수행평가 목록 (모든 반)
 let subjects = [];            // 과목 목록: { id, name, color }
 let isAdmin = false;          // 선생님 로그인 여부
+// 내가 완료한 수행평가 id 목록. 완료 여부는 학생마다 다르므로 서버가 아닌 '이 기기'에만 저장
+let doneIds = new Set(JSON.parse(localStorage.getItem("mg_done") || "[]"));
+const isDone = (t) => doneIds.has(t.id);
+function toggleDone(id) {
+  doneIds.has(id) ? doneIds.delete(id) : doneIds.add(id);
+  localStorage.setItem("mg_done", JSON.stringify([...doneIds]));
+}
 let editingId = null;         // 수정 중인 수행평가 id (새로 추가면 null)
 let fb = null;                // Firebase 관련 객체 모음 (실서비스 모드에서만 사용)
 const now0 = new Date();
@@ -467,7 +479,7 @@ function renderCalendar() {
     const ds = `${y}-${pad(m + 1)}-${pad(d)}`;
     const dayTasks = list.filter(t => t.date === ds).sort((a, b) => deadlineMs(a) - deadlineMs(b));
     const chips = dayTasks.slice(0, 3).map(t =>
-      `<span class="chip${isUnverified(t) ? " unverified" : ""}" style="background:${colorOf(t.subject)}" title="${esc(t.subject)}">${esc(t.title)}</span>`).join("");
+      `<span class="chip${isUnverified(t) ? " unverified" : ""}${isDone(t) ? " done" : ""}" style="background:${colorOf(t.subject)}" title="${esc(t.subject)}">${esc(t.title)}</span>`).join("");
     const more = dayTasks.length > 3 ? `<span class="more">+${dayTasks.length - 3}개 더</span>` : "";
     const cls = (ds === todayStr ? " today" : "") + (ds < todayStr ? " past" : "");
     html += `<div class="cell${cls}" data-date="${ds}"><span class="num">${d}</span>${chips}${more}</div>`;
@@ -484,14 +496,16 @@ function renderCalendar() {
 function renderSide() {
   const list = classTasks();
   const upcoming = list.filter(t => deadlineMs(t) >= Date.now()).sort((a, b) => deadlineMs(a) - deadlineMs(b));
+  const todo = upcoming.filter(t => !isDone(t));   // 아직 완료 안 한 것
   const thisMonth = `${now0.getFullYear()}-${pad(now0.getMonth() + 1)}`;
 
   $("stMonth").textContent = list.filter(t => t.date.startsWith(thisMonth)).length;
-  $("stUrgent").textContent = upcoming.filter(t => getDday(t).level === "urgent").length;
-  $("stNext").textContent = upcoming.length ? getDday(upcoming[0]).label : "-";
+  // 급한 것·가장 가까운 마감은 내가 아직 안 한 것만 셈
+  $("stUrgent").textContent = todo.filter(t => getDday(t).level === "urgent").length;
+  $("stNext").textContent = todo.length ? getDday(todo[0]).label : "-";
 
   $("upList").innerHTML = upcoming.length
-    ? upcoming.map(rowHtml).join("")
+    ? [...todo, ...upcoming.filter(isDone)].map(rowHtml).join("")   // 완료한 것은 아래로
     : `<div class="empty">다가오는 수행평가가 없습니다 🎉</div>`;
 }
 
@@ -506,13 +520,15 @@ function rowHtml(t) {
         <button class="btn light small" data-edit="${t.id}">수정</button>
         <button class="btn danger small" data-del="${t.id}">삭제</button>
       </div>` : "";
-  return `<div class="row" style="border-left-color:${colorOf(t.subject)}">
+  const done = isDone(t);
+  return `<div class="row${done ? " done" : ""}" style="border-left-color:${colorOf(t.subject)}">
+      <input type="checkbox" class="doneBox" data-done="${t.id}" ${done ? "checked" : ""} title="완료 체크 (이 기기에만 저장)">
       <div class="info">
         <div class="title">[${esc(t.subject)}] ${esc(t.title)}${tag}</div>
         <div class="meta">⏰ ${fmtDate(t)}${t.desc ? " · " + esc(t.desc) : ""}</div>
         ${admin}
       </div>
-      <div class="dday ${dd.level}">${dd.label}</div>
+      <div class="dday ${done ? "safe" : dd.level}">${done ? "완료" : dd.label}</div>
     </div>`;
 }
 
@@ -648,6 +664,11 @@ document.addEventListener("click", async (e) => {
   const el = e.target;
   if (el.dataset.grade) { cur.grade = Number(el.dataset.grade); localStorage.setItem("mg_grade", cur.grade); renderAll(); }
   else if (el.dataset.cls) { cur.cls = Number(el.dataset.cls); localStorage.setItem("mg_cls", cur.cls); renderAll(); }
+  else if (el.dataset.done) {
+    toggleDone(el.dataset.done);
+    renderAll();
+    if (!$("dayModal").hidden) openDay($("dayAddBtn").dataset.date);   // 날짜 상세 창이 열려 있으면 새로 그림
+  }
   else if (el.dataset.verify) { await updateTask(el.dataset.verify, { verified: true }); closeModals(); renderAll(); }
   else if (el.dataset.edit) { openTaskModal(tasks.find(t => t.id === el.dataset.edit)); }
   else if (el.dataset.del) {
